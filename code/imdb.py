@@ -1,5 +1,4 @@
 from __future__ import print_function
-from six.moves import xrange
 import six.moves.cPickle as pickle
 
 import gzip
@@ -63,7 +62,6 @@ def get_dataset_file(dataset, default_dataset, origin):
         # Check if dataset is in the data directory.
         new_path = os.path.join(
             os.path.split(__file__)[0],
-            "..",
             "data",
             dataset
         )
@@ -75,7 +73,6 @@ def get_dataset_file(dataset, default_dataset, origin):
         print('Downloading data from %s' % origin)
         urllib.request.urlretrieve(origin, dataset)
 
-        
     return dataset
 
 

@@ -98,13 +98,13 @@ def init_params(options):
     params['Wemb'] = (0.01 * randn).astype(config.floatX)
     params = get_layer(options['encoder'])[0](options,
                                               params,
-                                              prefix=options['encoder'])
+                                              prefix=options['encoder']) #param_init_lstm
     # classifier
     params['U'] = 0.01 * numpy.random.randn(options['dim_proj'],
                                             options['ydim']).astype(config.floatX)
     params['b'] = numpy.zeros((options['ydim'],)).astype(config.floatX)
 
-    return params
+    return params   #1.word embedding(Wemb:n_words*dim_proj)  2.output 权重和偏倚(U:dim_proj*ydim; b:ydim  y=Ux+b)
 
 
 def load_params(path, params):
@@ -154,11 +154,13 @@ def param_init_lstm(options, params, prefix='lstm'):
     b = numpy.zeros((4 * options['dim_proj'],))
     params[_p(prefix, 'b')] = b.astype(config.floatX)
 
-    return params
+    return params   #1.三个gate和一个cell的x的权重部分(inputgate,forgetgate,outputgate,cell)并在一起，矩阵(dim_proj*(dim_proj*4))  lstm_W
+                    #2.三个gate和一个cell的cell部分(inputgate,forgetgate,outputgate,cell)并在一起，矩阵(dim_proj*(dim_proj*4))  lstm_U
+                    #3.三个gate和一个cell的x的偏倚部分，向量(dim_proj*4)   lstm_b
 
 
 def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
-    nsteps = state_below.shape[0]
+    nsteps = state_below.shape[0]  #state_below就是上文的emb，3维的张量（n_timesteps*n_samples*dim_proj）
     if state_below.ndim == 3:
         n_samples = state_below.shape[1]
     else:
@@ -168,20 +170,20 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
 
     def _slice(_x, n, dim):
         if _x.ndim == 3:
-            return _x[:, :, n * dim:(n + 1) * dim]
+            return _x[:, :, n * dim:(n + 1) * dim]  #当batch大小==1时，进入这个分支
         return _x[:, n * dim:(n + 1) * dim]
 
     def _step(m_, x_, h_, c_):
-        preact = tensor.dot(h_, tparams[_p(prefix, 'U')])
-        preact += x_
+        preact = tensor.dot(h_, tparams[_p(prefix, 'U')])       #Us (三个gate和一个cell的cell部分)，scan的原因，h_维数是dim_proj，U是dim_proj*(dim_proj*4)，得到dim_proj*4
+        preact += x_    #x_维度n_samples*(dim_proj*4)，广播，注意，这里的x_是新的state_below，也就是Wx+b
 
         i = tensor.nnet.sigmoid(_slice(preact, 0, options['dim_proj']))
         f = tensor.nnet.sigmoid(_slice(preact, 1, options['dim_proj']))
         o = tensor.nnet.sigmoid(_slice(preact, 2, options['dim_proj']))
-        c = tensor.tanh(_slice(preact, 3, options['dim_proj']))
+        c = tensor.tanh(_slice(preact, 3, options['dim_proj']))   #ifoc维度n_samples*dim_proj
 
-        c = f * c_ + i * c
-        c = m_[:, None] * c + (1. - m_)[:, None] * c_
+        c = f * c_ + i * c  #c_维度dim_proj。这里是*不是dot，元素相乘。原公式里也是如此，没用点乘。
+        c = m_[:, None] * c + (1. - m_)[:, None] * c_  #[:, None]意思是增加新的轴，相当于numpy.newaxis。
 
         h = o * tensor.tanh(c)
         h = m_[:, None] * h + (1. - m_)[:, None] * h_
@@ -189,20 +191,23 @@ def lstm_layer(tparams, state_below, options, prefix='lstm', mask=None):
         return h, c
 
     state_below = (tensor.dot(state_below, tparams[_p(prefix, 'W')]) +
-                   tparams[_p(prefix, 'b')])
+                   tparams[_p(prefix, 'b')])        #Wx+b (三个gate和一个cell的x部分)
+                                                    #state_below是n_timesteps*n_samples*dim_proj，W是dim_proj*(dim_proj*4)，得到维度为n_timesteps*n_samples*(dim_proj*4)
+                                                    #b维度(dim_proj*4) ,broadcast广播机制的存在，使得所有的样本都会加上b
+                                                    #这时state_below维数不是n_timesteps*n_samples*dim_proj，而是n_timesteps*n_samples*(dim_proj*4)
 
     dim_proj = options['dim_proj']
     rval, updates = theano.scan(_step,
                                 sequences=[mask, state_below],
                                 outputs_info=[tensor.alloc(numpy_floatX(0.),
                                                            n_samples,
-                                                           dim_proj),
+                                                           dim_proj),   #这是h
                                               tensor.alloc(numpy_floatX(0.),
                                                            n_samples,
-                                                           dim_proj)],
+                                                           dim_proj)],  #这是c
                                 name=_p(prefix, '_layers'),
                                 n_steps=nsteps)
-    return rval[0]
+    return rval[0]    #rval[0]维度大小为n_timesteps * n_samples * dim_proj
 
 
 # ff: Feed Forward (normal neural net), only useful to put after lstm
@@ -379,10 +384,10 @@ def build_model(tparams, options):
 
     emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps,
                                                 n_samples,
-                                                options['dim_proj']])
+                                                options['dim_proj']]) #x是一个矩阵，行是句子数也就是样本数（batch大小），emb是一个3维张量
     proj = get_layer(options['encoder'])[1](tparams, emb, options,
                                             prefix=options['encoder'],
-                                            mask=mask)
+                                            mask=mask)   #lstm_layer返回h向量（张量是因为scan的原因）
     if options['encoder'] == 'lstm':
         proj = (proj * mask[:, :, None]).sum(axis=0)
         proj = proj / mask.sum(axis=0)[:, None]
@@ -481,6 +486,7 @@ def train_lstm(
     train, valid, test = load_data(n_words=n_words, valid_portion=0.05,
                                    maxlen=maxlen)
     if test_size > 0:
+        # 不是很懂作者逻辑，在imdb.py里对test排序后在这里又进行shuffle打乱。
         # The test set is sorted by size, but we want to keep random
         # size example.  So we must select a random selection of the
         # examples.
@@ -517,7 +523,7 @@ def train_lstm(
         weight_decay *= decay_c
         cost += weight_decay
 
-    f_cost = theano.function([x, mask, y], cost, name='f_cost')
+    f_cost = theano.function([x, mask, y], cost, name='f_cost')   #cost重复定义了。
 
     grads = tensor.grad(cost, wrt=list(tparams.values()))
     f_grad = theano.function([x, mask, y], grads, name='f_grad')
@@ -654,4 +660,5 @@ if __name__ == '__main__':
     train_lstm(
         max_epochs=100,
         test_size=500,
+        reload_model=True,
     )
